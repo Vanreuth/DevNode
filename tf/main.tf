@@ -46,7 +46,7 @@ resource "aws_security_group" "node_sg" {
 # Key pair (use your public key)
 resource "aws_key_pair" "node_key" {
   key_name   = "node-key"
-  public_key = file("~/.ssh/node-key.pub")
+  public_key = var.ec2_ssh_pub_key
 }
 
 # EC2 instance
