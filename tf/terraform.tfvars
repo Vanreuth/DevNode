@@ -1,0 +1,1 @@
+ec2_ssh_pub_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPWENFu1t/fiqRN3/qGneoBd0zXYQu2gOhraO3Trvz5D my-node-app-key"

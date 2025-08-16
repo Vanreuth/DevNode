@@ -8,29 +8,35 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    outputs:
+      ec2_ip: ${{ steps.terraform-output.outputs.public_ip }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
-      - name: Create SSH key files for Terraform
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/node-key
-          echo "${{ secrets.EC2_SSH_PUB_KEY }}" > ~/.ssh/node-key.pub
-          chmod 600 ~/.ssh/node-key
-          chmod 644 ~/.ssh/node-key.pub
+        with:
+          terraform_wrapper: false
 
       - name: Terraform Init & Apply
+        id: terraform-apply
         run: |
           cd tf
           terraform init
-          terraform apply -auto-approve
+          terraform apply -auto-approve \
+            -var="ec2_ssh_pub_key=${{ secrets.EC2_SSH_PUB_KEY }}"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Get Terraform Output
+        id: terraform-output
+        run: |
+          cd tf
+          PUBLIC_IP=$(terraform output -raw public_ip)
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "EC2 Public IP: $PUBLIC_IP"
 
   deploy:
     runs-on: ubuntu-latest
@@ -44,22 +50,43 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
+      - name: Wait for EC2 to be ready
+        run: |
+          echo "Waiting for EC2 instance to be ready..."
+          sleep 60
+          
+          # Wait for SSH to be available
+          timeout 300 bash -c 'until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@${{ needs.terraform.outputs.ec2_ip }} "echo SSH is ready"; do echo "Waiting for SSH..."; sleep 10; done'
+
       - name: Deploy Node.js App
         run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
-            mkdir -p ~/my-node-app
+          # Clean up and prepare directory
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.terraform.outputs.ec2_ip }} << 'EOF'
+            sudo mkdir -p ~/my-node-app
+            sudo chown ubuntu:ubuntu ~/my-node-app
             cd ~/my-node-app
             rm -rf *
-            exit
           EOF
-
-          rsync -avz --exclude 'node_modules' -e "ssh -o StrictHostKeyChecking=no" ./ ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/my-node-app
-
-          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+          
+          # Copy files to EC2
+          rsync -avz --exclude 'node_modules' --exclude '.git' --exclude 'tf' \
+            -e "ssh -o StrictHostKeyChecking=no" \
+            ./ ubuntu@${{ needs.terraform.outputs.ec2_ip }}:/home/ubuntu/my-node-app/
+          
+          # Build and run the application
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.terraform.outputs.ec2_ip }} << 'EOF'
             cd ~/my-node-app
             echo "MONGO_URI=${{ secrets.MONGO_URI }}" > .env
-            docker build -t my-node-app .
-            docker stop my-node-app || true
-            docker rm my-node-app || true
-            docker run -d --name my-node-app -p 80:3000 --env-file .env my-node-app
+            
+            # Wait for Docker to be ready
+            sudo systemctl status docker
+            
+            # Build and run the application
+            sudo docker build -t my-node-app .
+            sudo docker stop my-node-app || true
+            sudo docker rm my-node-app || true
+            sudo docker run -d --name my-node-app -p 80:3000 --env-file .env my-node-app
+            
+            echo "Deployment completed!"
+            echo "Application should be available at: http://${{ needs.terraform.outputs.ec2_ip }}"
           EOF
