@@ -1,12 +1,18 @@
 terraform {
   required_providers {
     aws = { source = "hashicorp/aws" }
+    random = { source = "hashicorp/random" }
   }
   required_version = ">= 1.5.0"
 }
 
 provider "aws" {
   region = "ap-southeast-1" # change to your preferred region
+}
+
+# Random suffix for unique names
+resource "random_id" "suffix" {
+  byte_length = 4
 }
 
 # Variable for SSH public key
@@ -17,7 +23,7 @@ variable "ec2_ssh_pub_key" {
 
 # Security group
 resource "aws_security_group" "node_sg" {
-  name        = "nodejs-sg"
+  name        = "nodejs-sg-${random_id.suffix.hex}"
   description = "Allow SSH, HTTP, HTTPS"
 
   ingress {
@@ -51,7 +57,7 @@ resource "aws_security_group" "node_sg" {
 
 # Key pair (use variable for public key)
 resource "aws_key_pair" "node_key" {
-  key_name   = "node-key"
+  key_name   = "node-key-${random_id.suffix.hex}"
   public_key = var.ec2_ssh_pub_key
 }
 
